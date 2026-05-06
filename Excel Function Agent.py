@@ -1,96 +1,126 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
-import json
+import plotly.express as px
 
 # ----------------------------
 # UI Configuration
 # ----------------------------
-st.set_page_config(page_title="Avocado Excel Architect", layout="wide")
-st.title("🥑 Avocado Excel Formula Generator")
-st.markdown("Generate and test Excel formulas using real Avocado market data.")
+st.set_page_config(page_title="MIS Interactive Dashboard", layout="wide")
+st.title("🥑 Automated Business Intelligence Dashboard")
+st.markdown("Upload your dataset to automatically generate an interactive MIS report.")
 
-# Sidebar Configuration
+# ----------------------------
+# Sidebar: Data Ingestion & Controls
+# ----------------------------
 with st.sidebar:
-    st.header("Settings")
-    api_key = st.text_input("Enter OpenAI API Key:", type="password")
+    st.header("1. Data Ingestion")
+    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
     
     st.divider()
-    st.markdown("### Avocado Demo Prompts")
-    # Tailored prompts for the Avocado dataset
-    avocado_prompts = [
-        "Calculate the Revenue for row 2 (AveragePrice * TotalVolume).",
-        "If TotalVolume > 10000, label it 'High Volume', else 'Low Volume'.",
-        "Extract the first 5 characters of the Region name.",
-        "Calculate a 10% price increase on the AveragePrice.",
-        "Combine Region and Type into a single ID string (e.g., 'Albany_Organic')."
-    ]
+    st.header("2. Dashboard Actions")
+    # The 'Create' button triggers the logic below
+    create_button = st.button("🚀 Create Dashboard", use_container_width=True)
     
-    clicked_task = None
-    for task in avocado_prompts:
-        if st.button(task, use_container_width=True):
-            clicked_task = task
-
-# ----------------------------
-# Data Context (MIS Connection: Data Integrity)
-# ----------------------------
-@st.cache_data
-def load_context():
-    df = pd.read_csv("AvocadoData.csv")
-    # Take a sample row to act as our "Excel Row" for the live test
-    sample_row = df.iloc[0].to_dict()
-    return sample_row
-
-context_row = load_context()
-
-# ----------------------------
-# Agent Logic
-# ----------------------------
-task_input = st.text_input("Describe your Excel task:", value=clicked_task if clicked_task else "")
-
-if task_input and api_key:
-    client = OpenAI(api_key=api_key)
-    
-    with st.spinner("Generating formula..."):
-        # We give the LLM the context of our specific columns
-        sys_prompt = f"""
-        You are an Excel Expert. The user is working with a table called 'AvocadoData'.
-        Columns available: {list(context_row.keys())}.
+    if uploaded_file:
+        # Step 1: Check if data is already in session to avoid re-reading the file
+        if 'raw_df' not in st.session_state:
+            # We only read the CSV once
+            st.session_state.raw_df = pd.read_csv(uploaded_file)
         
-        Current data for Row 2:
-        {context_row}
+        df = st.session_state.raw_df
         
-        Task:
-        1. Provide the Excel formula (assume columns are A to I).
-        2. Explain the logic briefly.
-        3. Perform the calculation using the provided Row 2 data.
+        st.success("File ready for processing.")
         
-        Return JSON: {{"formula": "...", "explanation": "...", "result": "..."}}
-        """
+        # Step 2: Global Filters (The "MIS Control Room")
+        st.divider()
+        st.header("3. Global Filters")
         
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": task_input}],
-            response_format={ "type": "json_object" }
+        selected_year = st.multiselect(
+            "Select Year(s):", 
+            options=sorted(df['year'].unique()), 
+            default=sorted(df['year'].unique())
         )
         
-        data = json.loads(response.choices[0].message.content)
+        selected_type = st.radio(
+            "Select Avocado Type:", 
+            options=df['type'].unique()
+        )
 
-        # ----------------------------
-        # Display Results
-        # ----------------------------
+# ----------------------------
+# Dashboard Rendering Logic
+# ----------------------------
+if uploaded_file and create_button:
+    # Access the data from session state
+    df = st.session_state.raw_df
+    
+    # Filter logic: Re-querying the data based on UI input
+    filtered_df = df[(df['year'].isin(selected_year)) & (df['type'] == selected_type)]
+    
+    if filtered_df.empty:
+        st.warning("No data matches the selected filters. Try adjusting your selections.")
+    else:
+        st.header(f"Executive Report: {selected_type} Avocados ({', '.join(map(str, selected_year))})")
+        
+        # Row 1: Key Performance Indicators (KPIs)
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Volume", f"{filtered_df['totalvolume'].sum():,.0f}")
+        m2.metric("Avg Market Price", f"${filtered_df['averageprice'].mean():.2f}")
+        m3.metric("Total Transactions", len(filtered_df))
+        m4.metric("Active Regions", filtered_df['region'].nunique())
+
         st.divider()
+
+        # Row 2: Interactive Visualizations
         col1, col2 = st.columns(2)
 
         with col1:
-            st.subheader("🛠️ Generated Formula")
-            st.code(data['formula'], language="excel")
-            st.info(f"**Logic:** {data['explanation']}")
+            st.subheader("Price Trend Over Time")
+            # Plotly Line Chart for interactivity (hover/zoom)
+            fig_line = px.line(
+                filtered_df.groupby('month')['averageprice'].mean().reset_index(), 
+                x='month', y='averageprice', 
+                title="Average Price by Month",
+                labels={'averageprice': 'Avg Price ($)', 'month': 'Month'},
+                markers=True
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+
+            st.subheader("Top 10 Regions by Volume")
+            top_regions = filtered_df.groupby('region')['totalvolume'].sum().sort_values(ascending=False).head(10).reset_index()
+            fig_bar = px.bar(
+                top_regions, x='totalvolume', y='region', orientation='h', 
+                title="Highest Volume Markets", 
+                color='totalvolume', color_continuous_scale='Greens'
+            )
+            fig_bar.update_layout(yaxis={'categoryorder':'total ascending'})
+            st.plotly_chart(fig_bar, use_container_width=True)
 
         with col2:
-            st.subheader("🧪 Live Data Test (Row 2)")
-            # Show the inputs so students see where the 'Result' comes from
-            st.write(f"**Inputs:** Price: ${context_row['averageprice']} | Volume: {context_row['totalvolume']}")
-            st.metric(label="Formula Output", value=data['result'])
+            st.subheader("Quarterly Market Share")
+            fig_pie = px.pie(
+                filtered_df, values='totalvolume', names='quarter', 
+                title="Volume Distribution by Quarter",
+                hole=0.4
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        st.success("**MIS Lecture Tip:** Remind students that formulas are 'Logic as a Service'—AI helps with the syntax, but they define the business rule.")
+            st.subheader("Price vs. Volume Correlation")
+            fig_scatter = px.scatter(
+                filtered_df, x='averageprice', y='totalvolume', 
+                color='quarter', size='totalvolume', 
+                hover_data=['region'], 
+                title="Price Impact on Demand"
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        # Row 3: Automated Pivot Analysis
+        st.divider()
+        st.subheader("Automated Pivot Analysis: Monthly Pricing")
+        st.markdown("This table replicates the **PivotTable** logic from the Excel module, highlighting maximum prices per quarter.")
+        
+        pivot = filtered_df.pivot_table(index='month', columns='quarter', values='averageprice', aggfunc='mean')
+        st.dataframe(pivot.style.highlight_max(axis=0, color='lightgreen'), use_container_width=True)
+
+# Placeholder when no file is uploaded
+elif not uploaded_file:
+    st.info("👋 Welcome! Please upload your `AvocadoData.csv` in the sidebar and click 'Create Dashboard' to see the automation in action.")
