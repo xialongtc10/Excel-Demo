@@ -1,89 +1,138 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from openai import OpenAI
 
-# ----------------------------
-# UI Configuration
-# ----------------------------
-st.set_page_config(page_title="MIS Interactive Dashboard", layout="wide")
-st.title("📊 Automated Business Intelligence Dashboard")
-st.markdown("Upload your dataset to automatically generate an interactive MIS report.")
+# -----------------------
+# CONFIG
+# -----------------------
+st.set_page_config(page_title="AI Dashboard Agent", layout="wide")
 
-# ----------------------------
-# Sidebar: Data Ingestion & Controls
-# ----------------------------
-with st.sidebar:
-    st.header("1. Data Ingestion")
-    uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
-    
-    st.divider()
-    st.header("2. Dashboard Actions")
-    create_button = st.button("🚀 Create Dashboard", use_container_width=True)
-    
-    if uploaded_file:
-        st.success("File uploaded successfully!")
-        # Global Filters (Interactive Element)
-        st.divider()
-        st.header("3. Global Filters")
-        df_temp = pd.read_csv(uploaded_file)
-        selected_year = st.multiselect("Select Year(s):", options=sorted(df_temp['year'].unique()), default=sorted(df_temp['year'].unique()))
-        selected_type = st.radio("Select Avocado Type:", options=df_temp['type'].unique())
+st.title("🤖 AI Agent: Automated Dashboard Builder")
+st.markdown("Upload data → Click **Create Dashboard** → AI analyzes & generates insights")
 
-# ----------------------------
-# ReAct Pattern: Processing & Rendering
-# ----------------------------
-if uploaded_file and create_button:
-    # Read the data
-    df = pd.read_csv(uploaded_file)
-    
-    # Apply Filters
-    filtered_df = df[(df['year'].isin(selected_year)) & (df['type'] == selected_type)]
-    
-    # Dashboard Layout
-    st.header(f"Executive Report: {selected_type} Avocados")
-    
-    # Row 1: Key Metrics
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Volume", f"{filtered_df['totalvolume'].sum():,.0f}")
-    m2.metric("Avg Price", f"${filtered_df['averageprice'].mean():.2f}")
-    m3.metric("Total Records", len(filtered_df))
-    m4.metric("Market Reach (Regions)", filtered_df['region'].nunique())
+# -----------------------
+# OPENAI SETUP
+# -----------------------
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-    st.divider()
+# -----------------------
+# HELPER FUNCTIONS
+# -----------------------
 
-    # Row 2: Charts
-    col1, col2 = st.columns(2)
+def load_data(file):
+    return pd.read_csv(file)
 
-    with col1:
-        st.subheader("Price Trend Over Time")
-        # Interactive Line Chart using Plotly
-        fig_line = px.line(filtered_df.groupby('month')['averageprice'].mean().reset_index(), 
-                           x='month', y='averageprice', title="Average Price by Month",
-                           labels={'averageprice': 'Avg Price ($)', 'month': 'Month'})
-        st.plotly_chart(fig_line, use_container_width=True)
 
-        st.subheader("Top 10 Regions by Volume")
-        top_regions = filtered_df.groupby('region')['totalvolume'].sum().sort_values(ascending=False).head(10).reset_index()
-        fig_bar = px.bar(top_regions, x='totalvolume', y='region', orientation='h', 
-                         title="Volume by Region", color='totalvolume', color_continuous_scale='Greens')
-        st.plotly_chart(fig_bar, use_container_width=True)
+def apply_filters(df, categorical_cols):
+    st.sidebar.header("🔎 Filters")
 
-    with col2:
-        st.subheader("Quarterly Distribution")
-        fig_pie = px.pie(filtered_df, values='totalvolume', names='quarter', title="Volume by Quarter",
-                         hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_pie, use_container_width=True)
+    filtered_df = df.copy()
 
-        st.subheader("Price vs. Volume Correlation")
-        fig_scatter = px.scatter(filtered_df, x='averageprice', y='totalvolume', color='quarter',
-                                 size='totalvolume', hover_data=['region'], title="Price vs. Volume Scatter")
-        st.plotly_chart(fig_scatter, use_container_width=True)
+    for col in categorical_cols[:3]:
+        options = df[col].dropna().unique()
+        selected = st.sidebar.multiselect(f"{col}", options, default=options)
 
-    # Row 3: Raw Data Insight (Pivot Table)
-    st.divider()
-    st.subheader("Pivot Analysis: Monthly Pricing Strategy")
-    pivot = filtered_df.pivot_table(index='month', columns='quarter', values='averageprice', aggfunc='mean')
-    st.dataframe(pivot.style.highlight_max(axis=0), use_container_width=True)
+        if selected:
+            filtered_df = filtered_df[filtered_df[col].isin(selected)]
 
-elif not uploaded_file:
-    st.info("Please upload a CSV file (like `AvocadoData.csv`) in the sidebar to begin.")
+    return filtered_df
+
+
+def create_charts(df):
+    charts = []
+
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+    categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
+
+    # Chart 1: Histogram
+    if numeric_cols:
+        fig = px.histogram(df, x=numeric_cols[0], title="Distribution")
+        charts.append(fig)
+
+    # Chart 2: Line
+    if numeric_cols and categorical_cols:
+        fig = px.line(df, x=categorical_cols[0], y=numeric_cols[0], title="Trend")
+        charts.append(fig)
+
+    # Chart 3: Bar (Pivot-style)
+    if numeric_cols and categorical_cols:
+        grouped = df.groupby(categorical_cols[0])[numeric_cols[0]].mean().reset_index()
+        fig = px.bar(grouped, x=categorical_cols[0], y=numeric_cols[0], title="Average by Category")
+        charts.append(fig)
+
+    # Chart 4: Scatter
+    if len(numeric_cols) >= 2:
+        fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], title="Correlation")
+        charts.append(fig)
+
+    # Chart 5: Box
+    if numeric_cols and categorical_cols:
+        fig = px.box(df, x=categorical_cols[0], y=numeric_cols[0], title="Distribution by Category")
+        charts.append(fig)
+
+    return charts
+
+
+def generate_insights(df):
+    summary = df.describe(include="all").to_string()
+
+    prompt = f"""
+    You are a business analyst.
+
+    Here is dataset summary:
+    {summary}
+
+    Provide 5 clear business insights.
+    """
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.choices[0].message.content
+
+
+# -----------------------
+# MAIN APP
+# -----------------------
+
+uploaded_file = st.file_uploader("📂 Upload CSV", type=["csv"])
+
+if uploaded_file:
+
+    df = load_data(uploaded_file)
+
+    st.subheader("📄 Data Preview")
+    st.dataframe(df.head())
+
+    if st.button("🚀 Create Dashboard"):
+
+        st.info("🧠 Agent Thinking: Understanding data...")
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
+
+        # Filters
+        filtered_df = apply_filters(df, categorical_cols)
+
+        st.success("⚙️ Agent Acting: Generating charts...")
+
+        charts = create_charts(filtered_df)
+
+        st.subheader("📊 Interactive Dashboard")
+
+        for chart in charts:
+            st.plotly_chart(chart, use_container_width=True)
+
+        st.success("📊 Agent Output: Dashboard ready!")
+
+        # AI Insights
+        st.subheader("🧠 AI Insights")
+
+        with st.spinner("Generating insights..."):
+            insights = generate_insights(filtered_df)
+
+        st.write(insights)
+
+        st.success("✅ Completed!")
