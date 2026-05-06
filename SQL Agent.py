@@ -22,8 +22,7 @@ with st.sidebar:
         "Show the average price and total volume by region for 2018.",
         "What are the top 5 regions with the highest total volume of Organic avocados?",
         "Compare the average price of conventional vs organic avocados by quarter.",
-        "Show the total volume per supplier for the year 2017.",
-        "Which month in 2016 had the highest average price in Raleigh/Greensboro?"
+        "Show the total volume per supplier for the year 2017."
     ]
     
     clicked_q = None
