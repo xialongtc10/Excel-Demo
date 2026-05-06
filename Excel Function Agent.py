@@ -1,138 +1,96 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from openai import OpenAI
+import json
 
-# -----------------------
-# CONFIG
-# -----------------------
-st.set_page_config(page_title="AI Dashboard Agent", layout="wide")
+# ----------------------------
+# UI Configuration
+# ----------------------------
+st.set_page_config(page_title="Avocado Excel Architect", layout="wide")
+st.title("🥑 Avocado Excel Formula Generator")
+st.markdown("Generate and test Excel formulas using real Avocado market data.")
 
-st.title("🤖 AI Agent: Automated Dashboard Builder")
-st.markdown("Upload data → Click **Create Dashboard** → AI analyzes & generates insights")
+# Sidebar Configuration
+with st.sidebar:
+    st.header("Settings")
+    api_key = st.text_input("Enter OpenAI API Key:", type="password")
+    
+    st.divider()
+    st.markdown("### Avocado Demo Prompts")
+    # Tailored prompts for the Avocado dataset
+    avocado_prompts = [
+        "Calculate the Revenue for row 2 (AveragePrice * TotalVolume).",
+        "If TotalVolume > 10000, label it 'High Volume', else 'Low Volume'.",
+        "Extract the first 5 characters of the Region name.",
+        "Calculate a 10% price increase on the AveragePrice.",
+        "Combine Region and Type into a single ID string (e.g., 'Albany_Organic')."
+    ]
+    
+    clicked_task = None
+    for task in avocado_prompts:
+        if st.button(task, use_container_width=True):
+            clicked_task = task
 
-# -----------------------
-# OPENAI SETUP
-# -----------------------
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# ----------------------------
+# Data Context (MIS Connection: Data Integrity)
+# ----------------------------
+@st.cache_data
+def load_context():
+    df = pd.read_csv("AvocadoData.csv")
+    # Take a sample row to act as our "Excel Row" for the live test
+    sample_row = df.iloc[0].to_dict()
+    return sample_row
 
-# -----------------------
-# HELPER FUNCTIONS
-# -----------------------
+context_row = load_context()
 
-def load_data(file):
-    return pd.read_csv(file)
+# ----------------------------
+# Agent Logic
+# ----------------------------
+task_input = st.text_input("Describe your Excel task:", value=clicked_task if clicked_task else "")
 
+if task_input and api_key:
+    client = OpenAI(api_key=api_key)
+    
+    with st.spinner("Generating formula..."):
+        # We give the LLM the context of our specific columns
+        sys_prompt = f"""
+        You are an Excel Expert. The user is working with a table called 'AvocadoData'.
+        Columns available: {list(context_row.keys())}.
+        
+        Current data for Row 2:
+        {context_row}
+        
+        Task:
+        1. Provide the Excel formula (assume columns are A to I).
+        2. Explain the logic briefly.
+        3. Perform the calculation using the provided Row 2 data.
+        
+        Return JSON: {{"formula": "...", "explanation": "...", "result": "..."}}
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": task_input}],
+            response_format={ "type": "json_object" }
+        )
+        
+        data = json.loads(response.choices[0].message.content)
 
-def apply_filters(df, categorical_cols):
-    st.sidebar.header("🔎 Filters")
+        # ----------------------------
+        # Display Results
+        # ----------------------------
+        st.divider()
+        col1, col2 = st.columns(2)
 
-    filtered_df = df.copy()
+        with col1:
+            st.subheader("🛠️ Generated Formula")
+            st.code(data['formula'], language="excel")
+            st.info(f"**Logic:** {data['explanation']}")
 
-    for col in categorical_cols[:3]:
-        options = df[col].dropna().unique()
-        selected = st.sidebar.multiselect(f"{col}", options, default=options)
+        with col2:
+            st.subheader("🧪 Live Data Test (Row 2)")
+            # Show the inputs so students see where the 'Result' comes from
+            st.write(f"**Inputs:** Price: ${context_row['averageprice']} | Volume: {context_row['totalvolume']}")
+            st.metric(label="Formula Output", value=data['result'])
 
-        if selected:
-            filtered_df = filtered_df[filtered_df[col].isin(selected)]
-
-    return filtered_df
-
-
-def create_charts(df):
-    charts = []
-
-    numeric_cols = df.select_dtypes(include="number").columns.tolist()
-    categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
-
-    # Chart 1: Histogram
-    if numeric_cols:
-        fig = px.histogram(df, x=numeric_cols[0], title="Distribution")
-        charts.append(fig)
-
-    # Chart 2: Line
-    if numeric_cols and categorical_cols:
-        fig = px.line(df, x=categorical_cols[0], y=numeric_cols[0], title="Trend")
-        charts.append(fig)
-
-    # Chart 3: Bar (Pivot-style)
-    if numeric_cols and categorical_cols:
-        grouped = df.groupby(categorical_cols[0])[numeric_cols[0]].mean().reset_index()
-        fig = px.bar(grouped, x=categorical_cols[0], y=numeric_cols[0], title="Average by Category")
-        charts.append(fig)
-
-    # Chart 4: Scatter
-    if len(numeric_cols) >= 2:
-        fig = px.scatter(df, x=numeric_cols[0], y=numeric_cols[1], title="Correlation")
-        charts.append(fig)
-
-    # Chart 5: Box
-    if numeric_cols and categorical_cols:
-        fig = px.box(df, x=categorical_cols[0], y=numeric_cols[0], title="Distribution by Category")
-        charts.append(fig)
-
-    return charts
-
-
-def generate_insights(df):
-    summary = df.describe(include="all").to_string()
-
-    prompt = f"""
-    You are a business analyst.
-
-    Here is dataset summary:
-    {summary}
-
-    Provide 5 clear business insights.
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.choices[0].message.content
-
-
-# -----------------------
-# MAIN APP
-# -----------------------
-
-uploaded_file = st.file_uploader("📂 Upload CSV", type=["csv"])
-
-if uploaded_file:
-
-    df = load_data(uploaded_file)
-
-    st.subheader("📄 Data Preview")
-    st.dataframe(df.head())
-
-    if st.button("🚀 Create Dashboard"):
-
-        st.info("🧠 Agent Thinking: Understanding data...")
-        numeric_cols = df.select_dtypes(include="number").columns.tolist()
-        categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
-
-        # Filters
-        filtered_df = apply_filters(df, categorical_cols)
-
-        st.success("⚙️ Agent Acting: Generating charts...")
-
-        charts = create_charts(filtered_df)
-
-        st.subheader("📊 Interactive Dashboard")
-
-        for chart in charts:
-            st.plotly_chart(chart, use_container_width=True)
-
-        st.success("📊 Agent Output: Dashboard ready!")
-
-        # AI Insights
-        st.subheader("🧠 AI Insights")
-
-        with st.spinner("Generating insights..."):
-            insights = generate_insights(filtered_df)
-
-        st.write(insights)
-
-        st.success("✅ Completed!")
+        st.success("**MIS Lecture Tip:** Remind students that formulas are 'Logic as a Service'—AI helps with the syntax, but they define the business rule.")
